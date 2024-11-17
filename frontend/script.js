@@ -24,11 +24,10 @@ function createHostButton() {
       alert("please chose a name first");
       return;
     }
-    const websocket = new WebSocket("ws://127.0.0.1:6969/test");
-    // const response = await fetch("/host", {
-    //   method: "POST",
-    //   body: JSON.stringify({ playerName }),
-    // });
+    const response = await fetch("/host", {
+      method: "POST",
+      body: JSON.stringify({ playerName }),
+    });
   });
   return hostButton;
 }
