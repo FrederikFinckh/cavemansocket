@@ -2,6 +2,7 @@ use std::{
     fs::{read_to_string, File},
     io::{Read, Write},
     net::{TcpListener, TcpStream},
+    thread,
 };
 
 const PUBLIC_RESOURCES: [&str; 3] = [
@@ -35,6 +36,7 @@ fn handle_connection(mut stream: TcpStream) {
     let mut buffer = [0; 1024];
     stream.read(&mut buffer).unwrap();
     let request = String::from_utf8_lossy(&buffer[..]);
+    println!("---------------------------------");
     println!("Request: {}", request);
 
     if request.starts_with("GET / HTTP/1.1") {
@@ -44,7 +46,18 @@ fn handle_connection(mut stream: TcpStream) {
         handle(stream, Resource::Script);
     } else if request.starts_with("GET /favicon.ico HTTP/1.1") {
         handle(stream, Resource::Favicon);
+    } else if request.starts_with("POST /host HTTP/1.1") {
+        handle_host(stream, request.to_string());
     }
+}
+
+fn handle_host(stream: TcpStream, request: String) {
+    thread::spawn(|| {
+        println!("it seems like someone wants to host a new game. I have just spawned a new thread to handle this!");
+        println!("let's bind to a fresh port (given by the OS) and listen to connections on that port. We return the portnumber and keep track of the host of the game. They should be in the request.");
+        println!("Once the port is opened we will wait for incoming websocket connections and broadcast all the messages to everyone!");
+        todo!();
+    });
 }
 
 fn handle(stream: TcpStream, resource: Resource) {
@@ -112,6 +125,7 @@ fn serve_bytes(mut stream: TcpStream, bytes: Vec<u8>) {
             println!("there was an error sending response to client! {:?}", e);
         }
     }
+    println!("-------------------------------");
 }
 
 fn forbidden() -> Vec<u8> {
