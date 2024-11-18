@@ -1,4 +1,4 @@
-# fromscratch
+# cavemansocket
 
 I wanted to see how hard it is to write an http 1.1 server from scratch.
 Turns out it is quite easy.
