@@ -1,3 +1,4 @@
+use std::sync::{RwLock, RwLockWriteGuard};
 use std::{
     fs::{read_to_string, File},
     io::{Read, Write},
@@ -14,12 +15,6 @@ const PUBLIC_RESOURCES: [&str; 3] = [
     "./frontend/favicon.ico",
 ];
 
-enum Resource {
-    Index,
-    Script,
-    Favicon,
-}
-
 const HTTP_OK: &str = "HTTP/1.1 200 OK\r\n";
 
 fn create_tcp_listener(port: u16) -> Result<TcpListener, std::io::Error> {
@@ -27,17 +22,44 @@ fn create_tcp_listener(port: u16) -> Result<TcpListener, std::io::Error> {
     TcpListener::bind(format!("127.0.0.1:{}", port))
 }
 
+#[derive(Clone)]
+struct Session {
+    port: u16,
+    hosting_user: User,
+    joined_users: Vec<User>,
+}
+
+impl Session {
+    fn to_json(&self) -> String {
+        let joined_users_strings: Vec<String> = self
+            .joined_users
+            .iter()
+            .map(|user| format!("\"{}\"", user.name.clone()))
+            .collect();
+        format!(
+            "{{\"port\": {}, \"hosting_user\": \"{}\", \"joined_users\": [{}]}}",
+            self.port,
+            self.hosting_user.name,
+            joined_users_strings.join(",")
+        )
+    }
+}
+
+#[derive(Clone)]
+struct User {
+    name: String,
+}
+
 fn main() {
+    let sessions: RwLock<Vec<Session>> = RwLock::new(vec![]);
     for stream in create_tcp_listener(6969).unwrap().incoming() {
         println!("new connection");
         println!("let's listen to what they have to say!");
-        let _stream = stream.unwrap(); // Call function to process any incomming connections
-        handle_connection(_stream);
+        handle_connection(stream.unwrap(), sessions.write().unwrap());
     }
-    println!("Hello, world!");
 }
 
-fn handle_connection(mut stream: TcpStream) {
+fn handle_connection(mut stream: TcpStream, sessions: RwLockWriteGuard<'_, Vec<Session>>) {
     let mut buffer = [0; 1024];
     stream.read(&mut buffer).unwrap();
     let request = String::from_utf8_lossy(&buffer[..]);
@@ -45,45 +67,81 @@ fn handle_connection(mut stream: TcpStream) {
     println!("Request: {}", request);
 
     if request.starts_with("GET / HTTP/1.1") {
-        handle(stream, Resource::Index);
+        serve_html(stream, "./frontend/index.html");
     } else if request.starts_with("GET /script.js HTTP/1.1") {
         println!("someone wants the JS!");
-        handle(stream, Resource::Script);
+        serve_script(stream, "./frontend/script.js");
     } else if request.starts_with("GET /favicon.ico HTTP/1.1") {
-        handle(stream, Resource::Favicon);
+        serve_image(stream, "./frontend/favicon.ico");
+    } else if request.starts_with("GET /sessions HTTP/1.1") {
+        let sessions_strings: Vec<String> = sessions
+            .to_vec()
+            .iter()
+            .map(|session| format!("{}", session.to_json()))
+            .collect();
+        serve_json(stream, format!("[{}]", sessions_strings.join(",")));
     } else if request.starts_with("POST /host HTTP/1.1") {
-        handle_host(stream, request.to_string());
+        handle_host(stream, sessions, request.to_string());
     }
 }
 
-fn handle_host(stream: TcpStream, request: String) {
+fn handle_host(
+    stream: TcpStream,
+    mut sessions: RwLockWriteGuard<'_, Vec<Session>>,
+    request: String,
+) {
+    let username_pattern = "{\"username\":\"";
+    let username = match request.find(username_pattern) {
+        Some(hosting_user_index) => &request[hosting_user_index + username_pattern.len()..]
+            .to_string()
+            .split_once("\"}")
+            .unwrap()
+            .0
+            .to_string(),
+        None => return,
+    };
+    println!(
+        "it seems like {} wants to host a new game. I will spawn a new thread to handle this!",
+        username
+    );
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
-        println!("it seems like someone wants to host a new game. I have just spawned a new thread to handle this!");
         println!("let's bind to a fresh port (given by the OS) and listen to connections on that port. We return the portnumber and keep track of the host of the game. They should be in the request.");
-        println!("Once the port is opened we will wait for incoming websocket connections and broadcast all the messages to everyone!");
+        println!("Once the port is opened we will wait for incoming websocket connections and broadcast all the messages to everyone connected to it!");
         println!("to communicate we use a channel that was created in the main thread and this new thread now has the sender. It will send a message with the portnumber as soon as everything is set up");
-        websocket::spawn(request, sender);
+        websocket::spawn(sender);
     });
+    println!("waiting for other thread to send a response");
     match receiver.recv() {
-        Ok(port) => println!("received {:?}", port),
-        Err(e) => println!("something went wrong receiving the opened port: {}", e),
+        Ok(port) => {
+            println!("received {:?}", port);
+            sessions.push(Session {
+                port,
+                hosting_user: User {
+                    name: username.to_string(),
+                },
+                joined_users: vec![],
+            });
+            serve_json(
+                stream,
+                format!("{{\"port\": {}, \"username\": \"{}\"}}", port, username),
+            );
+        }
+        Err(e) => {
+            println!("something went wrong receiving the opened port: {}", e);
+        }
     }
-    serve_html(stream, "./frontend/index.html"); //for now
 }
 
-fn handle(stream: TcpStream, resource: Resource) {
-    match resource {
-        Resource::Index => {
-            serve_html(stream, "./frontend/index.html");
-        }
-        Resource::Script => {
-            serve_script(stream, "./frontend/script.js");
-        }
-        Resource::Favicon => {
-            serve_image(stream, "./frontend/favicon.ico");
-        }
-    }
+fn serve_json(stream: TcpStream, json_body: String) {
+    println!("serving json: \n{}", json_body);
+    let response = format!(
+        "{}Content-length: {}\r\nContent-Type: text/json\r\n\r\n{}",
+        HTTP_OK,
+        json_body.len(),
+        json_body
+    );
+    serve_bytes(stream, response.as_bytes().to_vec());
 }
 
 fn serve_script(stream: TcpStream, path: &str) {
